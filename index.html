@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Collection</title>
+  <!-- Load Supabase JS Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --danger: #dc2626;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+    }
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 1rem;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    .hidden { display: none !important; }
+    .word-box {
+      font-size: 2rem;
+      font-weight: 700;
+      margin: 1.5rem 0;
+      padding: 1rem;
+      background: #f1f5f9;
+      border-radius: 0.5rem;
+      letter-spacing: 0.05em;
+    }
+    button {
+      width: 100%;
+      padding: 0.85rem;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      margin: 0.4rem 0;
+      transition: background 0.2s;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-secondary { background: #e2e8f0; color: #334155; }
+    .btn-record {
+      height: 72px;
+      width: 72px;
+      border-radius: 50%;
+      margin: 1rem auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--danger);
+      color: white;
+    }
+    .recording { animation: pulse 1s infinite alternate; }
+    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.1); } }
+    .progress { font-size: 0.875rem; color: #64748b; margin-bottom: 0.5rem; }
+    audio { width: 100%; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    
+    <!-- Screen 1: Consent -->
+    <div id="screen-consent">
+      <h2>Audio Contribution</h2>
+      <p style="text-align: left; line-height: 1.5; color: #475569;">
+        [Consent Paragraph Placeholder]<br><br>
+        By participating, you agree to record 6 short audio samples. The recordings will be processed anonymously at 16kHz mono and stored securely for study purposes.
+      </p>
+      <button class="btn-primary" id="btn-agree">I Agree & Continue</button>
+    </div>
+
+    <!-- Screen 2: Recording -->
+    <div id="screen-record" class="hidden">
+      <div class="progress" id="step-counter">Task 1 of 6</div>
+      <p>Say the word clearly:</p>
+      <div class="word-box" id="word-display">octopus</div>
+
+      <div id="record-controls">
+        <button class="btn-record" id="btn-mic">🎙️</button>
+        <p id="record-status" style="font-size: 0.875rem; color: #64748b;">Tap to Record (2s)</p>
+      </div>
+
+      <div id="review-controls" class="hidden">
+        <audio id="audio-preview" controls></audio>
+        <button class="btn-secondary" id="btn-rerecord">Re-record</button>
+        <button class="btn-primary" id="btn-save">Accept & Next</button>
+      </div>
+    </div>
+
+    <!-- Screen 3: Status -->
+    <div id="screen-finish" class="hidden">
+      <h3 id="finish-title">Uploading...</h3>
+      <p id="finish-desc">Saving your 16 kHz audio samples...</p>
+    </div>
+
+  </div>
+
+  <script>
+    // 1. Insert your Supabase Credentials here:
+    const SUPABASE_URL = 'https://irmjwwefryqbmyijkwhv.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlybWp3d2VmcnlxYm15aWprd2h2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNTMyMDIsImV4cCI6MjEwNDYyOTIwMn0.WJcdPIbdEzva6XWOn_6W2HMNt7VixMwitKPmTMh4oDk';
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const TASKS = [
+      { word: 'octopus',  path: 'keywords/<HEX>_keyword_1.wav' },
+      { word: 'octopus',  path: 'keywords/<HEX>_keyword_2.wav' },
+      { word: 'octopus',  path: 'keywords/<HEX>_keyword_3.wav' },
+      { word: 'compass',  path: 'distractors/<HEX>_compass.wav' },
+      { word: 'platypus', path: 'distractors/<HEX>_platypus.wav' },
+      { word: 'rumpus',   path: 'distractors/<HEX>_rumpus.wav' }
+    ];
+
+    let currentIndex = 0;
+    let audioStream = null;
+    let recordedWavBlob = null;
+    const completedUploads = [];
+
+    // Duplicate submission check
+    if (localStorage.getItem('study_submitted') === 'true') {
+      document.getElementById('screen-consent').classList.add('hidden');
+      document.getElementById('screen-finish').classList.remove('hidden');
+      document.getElementById('finish-title').textContent = "Task Already Completed";
+      document.getElementById('finish-desc').textContent = "Thank you! You have already submitted your recordings on this device.";
+    }
+
+    // Generate random 2-hex ID
+    const speakerId = Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+
+    // UI Bindings
+    const btnAgree = document.getElementById('btn-agree');
+    const screenConsent = document.getElementById('screen-consent');
+    const screenRecord = document.getElementById('screen-record');
+    const screenFinish = document.getElementById('screen-finish');
+    const wordDisplay = document.getElementById('word-display');
+    const stepCounter = document.getElementById('step-counter');
+    const btnMic = document.getElementById('btn-mic');
+    const recordStatus = document.getElementById('record-status');
+    const recordControls = document.getElementById('record-controls');
+    const reviewControls = document.getElementById('review-controls');
+    const audioPreview = document.getElementById('audio-preview');
+    const btnRerecord = document.getElementById('btn-rerecord');
+    const btnSave = document.getElementById('btn-save');
+
+    btnAgree.addEventListener('click', async () => {
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        screenConsent.classList.add('hidden');
+        screenRecord.classList.remove('hidden');
+        loadStep(0);
+      } catch (err) {
+        alert("Microphone access is required to proceed.");
+      }
+    });
+
+    function loadStep(index) {
+      currentIndex = index;
+      wordDisplay.textContent = TASKS[index].word;
+      stepCounter.textContent = `Task ${index + 1} of ${TASKS.length}`;
+      reviewControls.classList.add('hidden');
+      recordControls.classList.remove('hidden');
+      recordStatus.textContent = "Tap to Record (2s)";
+    }
+
+    // 2-second capture & 16kHz resampling
+    btnMic.addEventListener('click', async () => {
+      btnMic.disabled = true;
+      btnMic.classList.add('recording');
+      recordStatus.textContent = "Recording... (2s)";
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(audioStream);
+      
+      const sampleRate = audioCtx.sampleRate;
+      const totalRawSamples = sampleRate * 2;
+      const buffer = audioCtx.createBuffer(1, totalRawSamples, sampleRate);
+      const channelData = buffer.getChannelData(0);
+
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      let recordedSamples = 0;
+
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          if (recordedSamples < totalRawSamples) {
+            channelData[recordedSamples++] = input[i];
+          }
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      setTimeout(async () => {
+        processor.disconnect();
+        source.disconnect();
+        await audioCtx.close();
+        btnMic.classList.remove('recording');
+        btnMic.disabled = false;
+
+        // Offline resample to 16,000 Hz Mono
+        const targetRate = 16000;
+        const offlineCtx = new OfflineAudioContext(1, targetRate * 2, targetRate);
+        const playSource = offlineCtx.createBufferSource();
+        playSource.buffer = buffer;
+        playSource.connect(offlineCtx.destination);
+        playSource.start(0);
+        const resampled = await offlineCtx.startRendering();
+
+        recordedWavBlob = bufferToWaveBlob(resampled, targetRate);
+        audioPreview.src = URL.createObjectURL(recordedWavBlob);
+
+        recordControls.classList.add('hidden');
+        reviewControls.classList.remove('hidden');
+      }, 2000);
+    });
+
+    btnRerecord.addEventListener('click', () => {
+      reviewControls.classList.add('hidden');
+      recordControls.classList.remove('hidden');
+      recordStatus.textContent = "Tap to Record (2s)";
+    });
+
+    btnSave.addEventListener('click', async () => {
+      const task = TASKS[currentIndex];
+      const filePath = task.path.replace('<HEX>', speakerId);
+
+      completedUploads.push({
+        path: filePath,
+        blob: recordedWavBlob
+      });
+
+      if (currentIndex + 1 < TASKS.length) {
+        loadStep(currentIndex + 1);
+      } else {
+        await uploadAllToSupabase();
+      }
+    });
+
+    async function uploadAllToSupabase() {
+      screenRecord.classList.add('hidden');
+      screenFinish.classList.remove('hidden');
+
+      try {
+        for (const item of completedUploads) {
+          const { error } = await supabaseClient
+            .storage
+            .from('audio-data')
+            .upload(item.path, item.blob, {
+              contentType: 'audio/wav',
+              upsert: false
+            });
+
+          if (error) throw error;
+        }
+
+        localStorage.setItem('study_submitted', 'true');
+        document.getElementById('finish-title').textContent = "Thank You!";
+        document.getElementById('finish-desc').textContent = "All 6 audio samples were recorded at 16 kHz and uploaded successfully.";
+      } catch (err) {
+        document.getElementById('finish-title').textContent = "Upload Error";
+        document.getElementById('finish-desc').textContent = "Error saving files: " + err.message;
+      }
+    }
+
+    // WAV 16-bit PCM Mono Encoder
+    function bufferToWaveBlob(abuffer, sampleRate) {
+      const numOfChan = 1;
+      const length = 32000 * 2 + 44; // 2s @ 16kHz
+      const out = new DataView(new ArrayBuffer(length));
+      const channels = [abuffer.getChannelData(0)];
+      let pos = 0;
+
+      function setUint16(data) { out.setUint16(pos, data, true); pos += 2; }
+      function setUint32(data) { out.setUint32(pos, data, true); pos += 4; }
+
+      setUint32(0x46464952); // "RIFF"
+      setUint32(length - 8);
+      setUint32(0x45564157); // "WAVE"
+      setUint32(0x20746d66); // "fmt "
+      setUint32(16);
+      setUint16(1);
+      setUint16(numOfChan);
+      setUint32(sampleRate);
+      setUint32(sampleRate * 2 * numOfChan);
+      setUint16(numOfChan * 2);
+      setUint16(16);
+      setUint32(0x61746164); // "data"
+      setUint32(length - pos - 4);
+
+      for (let i = 0; i < 32000; i++) {
+        let sample = Math.max(-1, Math.min(1, channels[0][i] || 0));
+        sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+        out.setInt16(pos, sample, true);
+        pos += 2;
+      }
+
+      return new Blob([out.buffer], { type: "audio/wav" });
+    }
+  </script>
+</body>
+</html>
